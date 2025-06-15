@@ -33,7 +33,7 @@ ICONS_MAP_FILE = Path('icons_map.json')
 README_FILE = 'README.md'
 RAW_BASE_URL = "https://raw.githubusercontent.com/{owner}/{repo}/main/{filepath}"
 
-# --- Вспомогательные функции (без изменений) ---
+# --- Вспомогательные функции ---
 def clean_name(name):
     name = name.lower()
     name = re.sub(r'\s*\b(hd|fhd|uhd|4k|8k|sd|low|vip|\(p\))\b', '', name, flags=re.IGNORECASE)
@@ -48,8 +48,17 @@ def get_channel_names(channel_element):
 def is_gzipped(file_path):
     with open(file_path, 'rb') as f:
         return f.read(2) == b'\x1f\x8b'
-# ---
 
+# --- Класс для сериализации ---
+class CustomEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, Path):
+            return str(obj)
+        if isinstance(obj, set):
+            return list(obj)
+        return json.JSONEncoder.default(self, obj)
+
+# --- ОСНОВНЫЕ ФУНКЦИИ ---
 def read_sources_and_notes():
     try:
         with open(SOURCES_FILE, 'r', encoding='utf-8') as f:
@@ -114,7 +123,6 @@ def _parse_icon_source_file(file_path, desc):
         print(f"Ошибка парсинга {file_path.name}: {e}", file=sys.stderr)
     return found_icons
 
-# <<< ИЗМЕНЕНИЕ 1: `build_icon_database` теперь всегда хранит `names` как `set` >>>
 def build_icon_database(download_results):
     print("\n--- Этап 1: Создание базы данных иконок ---")
     icon_db, icon_urls_to_download = {}, {}
@@ -125,7 +133,6 @@ def build_icon_database(download_results):
                 filename = Path(urlparse(icon_url).path).name or f"{channel_id}.png"
                 local_icon_path = ICONS_DIR / filename
                 db_key = f"{desc}_{channel_id}"
-                # Храним путь как Path, а имена как set. Преобразуем для JSON только при записи.
                 icon_db[db_key] = {'icon_path': local_icon_path, 'names': names}
                 icon_urls_to_download[icon_url] = local_icon_path
     
@@ -140,9 +147,7 @@ def build_icon_database(download_results):
             for future in as_completed(future_to_url): future.result()
     print("Загрузка иконок завершена.")
     return icon_db
-# <<< КОНЕЦ ИЗМЕНЕНИЯ 1 >>>
 
-# <<< ИЗМЕНЕНИЕ 2: `load_icon_map` теперь преобразует `names` обратно в `set` >>>
 def load_icon_map():
     print("\n--- Этап 1: Загрузка карты сопоставления иконок ---")
     if not ICONS_MAP_FILE.is_file():
@@ -155,11 +160,10 @@ def load_icon_map():
     for key, value in icon_map_data.items():
         icon_db[key] = {
             'icon_path': Path(value['icon_path']),
-            'names': set(value['names'])  # <-- Вот исправление
+            'names': set(value['names'])
         }
     print(f"Карта иконок успешно загружена. Записей: {len(icon_db)}.")
     return icon_db
-# <<< КОНЕЦ ИЗМЕНЕНИЯ 2 >>>
 
 def find_best_match(channel_names, icon_db):
     if not channel_names: return None
@@ -168,7 +172,6 @@ def find_best_match(channel_names, icon_db):
     for db_entry in icon_db.values():
         db_names = db_entry['names']
         if not db_names: continue
-        # Эта строка теперь будет работать, так как оба операнда - множества (set)
         if channel_names & db_names: return db_entry['icon_path']
         score = fuzz.token_set_ratio(' '.join(sorted(channel_names)), ' '.join(sorted(db_names)))
         if score > best_match_score:
@@ -179,7 +182,7 @@ def find_best_match(channel_names, icon_db):
     return None
 
 def process_epg_file(file_path, icon_db, owner, repo_name, entry):
-    # ... (без изменений) ...
+    """Обрабатывает один EPG-файл: находит и заменяет URL иконок."""
     print(f"Обрабатываю файл: {file_path.name}")
     try:
         was_gzipped = is_gzipped(file_path)
@@ -204,9 +207,18 @@ def process_epg_file(file_path, icon_db, owner, repo_name, entry):
             print(f"Внесено {changes_made} изменений в иконки файла {file_path.name}.")
             doctype_str = '<!DOCTYPE tv SYSTEM "https://iptvx.one/xmltv.dtd">'
             xml_bytes = etree.tostring(tree, pretty_print=True, xml_declaration=True, encoding='UTF-8', doctype=doctype_str)
+            
             if was_gzipped:
+                # <<< ИЗМЕНЕНИЕ ЗДЕСЬ >>>
                 original_filename = Path(urlparse(entry['url']).path).name
-                archive_internal_name = original_filename[:-3] if original_filename.lower().endswith('.gz') else original_filename
+                # Если у оригинального имени файла есть расширение .gz, убираем его
+                if original_filename.lower().endswith('.gz'):
+                    archive_internal_name = original_filename[:-3]
+                # Иначе (если это EPG_LITE), добавляем .xml
+                else:
+                    archive_internal_name = f"{original_filename}.xml"
+                # <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
+                
                 with gzip.GzipFile(filename=archive_internal_name, mode='wb', fileobj=open(file_path, 'wb'), mtime=0) as f_out:
                     f_out.write(xml_bytes)
             else:
@@ -217,7 +229,6 @@ def process_epg_file(file_path, icon_db, owner, repo_name, entry):
         return False
 
 def update_readme(results, notes):
-    # ... (без изменений) ...
     utc_now, timestamp = datetime.now(timezone.utc), datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M %Z')
     lines = [notes, "\n---"] if notes else []
     lines.append(f"\n# Обновлено: {timestamp}\n")
@@ -231,16 +242,6 @@ def update_readme(results, notes):
     with open(README_FILE, 'w', encoding='utf-8') as f:
         f.write("\n".join(lines))
     print(f"README.md обновлён ({len(results)} записей)")
-
-# <<< ИЗМЕНЕНИЕ 3: Кастомный сериализатор для JSON, чтобы он мог обрабатывать Path и set >>>
-class CustomEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, Path):
-            return str(obj)
-        if isinstance(obj, set):
-            return list(obj)
-        return json.JSONEncoder.default(self, obj)
-# <<< КОНЕЦ ИЗМЕНЕНИЯ 3 >>>
 
 def main():
     parser = argparse.ArgumentParser(description="EPG Updater Script")
@@ -269,10 +270,8 @@ def main():
         icon_db = build_icon_database(download_results)
         
         print(f"Сохранение карты иконок в {ICONS_MAP_FILE}...")
-        # <<< ИЗМЕНЕНИЕ 4: Используем кастомный сериализатор >>>
         with open(ICONS_MAP_FILE, 'w', encoding='utf-8') as f:
             json.dump(icon_db, f, ensure_ascii=False, indent=2, cls=CustomEncoder)
-        # <<< КОНЕЦ ИЗМЕНЕНИЯ 4 >>>
         print("Карта иконок сохранена.")
 
     else:
