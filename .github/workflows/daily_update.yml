@@ -1,9 +1,23 @@
-name: Daily Data Update
+# .github/workflows/daily_update.yml
+name: EPG Data Update
 
 on:
   schedule:
-    - cron: '0 0 * * *'  
-  workflow_dispatch: {}   
+    # Ежедневный запуск БЕЗ обновления иконок в 00:00 UTC
+    - cron: '0 0 * * *'
+    # Еженедельный запуск С обновлением иконок в 01:00 UTC каждое воскресенье
+    - cron: '0 1 * * 0'
+
+  workflow_dispatch:
+    inputs:
+      update_type:
+        description: 'Тип обновления'
+        required: true
+        default: 'daily'
+        type: choice
+        options:
+        - daily  # Только EPG
+        - full   # EPG + Иконки
 
 jobs:
   update:
@@ -14,6 +28,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        # Нужен fetch-depth: 0, чтобы git мог определить, когда последний раз менялась папка icons
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -21,11 +38,28 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests gdshortener lxml thefuzz python-Levenshtein
+        # Убрали gdshortener
+        run: pip install requests lxml thefuzz python-Levenshtein
+
+      - name: Determine update mode
+        id: mode
+        run: |
+          # Если запуск по расписанию в 01:00 в воскресенье - это full update
+          if [[ "${{ github.event_name }}" == "schedule" && "$(date -u +'%H:%M %w')" == "01:00 0" ]]; then
+            echo "mode_flag=--full-update" >> $GITHUB_OUTPUT
+            echo "commit_message=Auto-update (weekly, full): $(date -u +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+          # Если ручной запуск и выбран 'full'
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.update_type }}" == "full" ]]; then
+            echo "mode_flag=--full-update" >> $GITHUB_OUTPUT
+            echo "commit_message=Manual full update: $(date -u +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+          # Во всех остальных случаях - daily update
+          else
+            echo "mode_flag=" >> $GITHUB_OUTPUT
+            echo "commit_message=Auto-update (daily): $(date -u +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+          fi
 
       - name: Run update script
-        run: python fetch_and_commit.py
-
+        run: python fetch_and_commit.py ${{ steps.mode.outputs.mode_flag }}
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
 
@@ -34,6 +68,7 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
+          # Проверяем изменения в data, icons и README
           if git diff --quiet --exit-code data/ icons/ README.md; then
             echo "No changes to commit."
             exit 0
@@ -41,6 +76,6 @@ jobs:
           
           git add data/ icons/ README.md
           
-          git commit -m "Auto-update: $(date -u +'%Y-%m-%d')"
+          git commit -m "${{ steps.mode.outputs.commit_message }}"
           
           git push
