@@ -30,7 +30,10 @@ SIMILARITY_THRESHOLD = 0.8
 RAW_BASE_URL = "https://raw.githubusercontent.com/{owner}/{repo}/main/{filepath}"
 JSDELIVR_BASE_URL = "https://cdn.jsdelivr.net/gh/{owner}/{repo}@main/{filepath}"
 
-
+def is_gzipped(file_path):
+    """Проверяет, является ли файл gzipped, по его магическим байтам."""
+    with open(file_path, 'rb') as f:
+        return f.read(2) == b'\x1f\x8b'
 
 def clean_name(name):
     """Очищает имя канала для лучшего сравнения."""
@@ -139,8 +142,10 @@ def build_icon_database(download_results):
         file_path = result['temp_path']
         
         try:
-            open_func = gzip.open if str(file_path).endswith('.gz') else open
+            # <<< ИЗМЕНЕНИЕ: Используем функцию is_gzipped для определения способа открытия >>>
+            open_func = gzip.open if is_gzipped(file_path) else open
             with open_func(file_path, 'rb') as f:
+                # lxml.etree.parse может принимать файловый объект
                 tree = etree.parse(f)
             root = tree.getroot()
 
@@ -165,7 +170,8 @@ def build_icon_database(download_results):
                         icon_urls_to_download[icon_url] = local_icon_path
 
         except (etree.XMLSyntaxError, gzip.BadGzipFile, ValueError) as e:
-            print(f"Ошибка парсинга {file_path} для сбора иконок: {e}", file=sys.stderr)
+            # <<< ИЗМЕНЕНИЕ: Добавили имя файла в сообщение об ошибке для ясности >>>
+            print(f"Ошибка парсинга {file_path.name} для сбора иконок: {e}", file=sys.stderr)
 
     print(f"Найдено {len(icon_db)} каналов с иконками в источниках.")
     print(f"Требуется скачать {len(icon_urls_to_download)} уникальных иконок.")
@@ -215,8 +221,13 @@ def process_epg_file(file_path, icon_db, owner, repo_name):
     """Обрабатывает один EPG файл: находит и заменяет URL иконок."""
     print(f"Обрабатываю файл: {file_path.name}")
     try:
+        # <<< ИЗМЕНЕНИЕ: Запоминаем, был ли файл сжат изначально >>>
+        was_gzipped = is_gzipped(file_path)
+        open_func = gzip.open if was_gzipped else open
+        
         parser = etree.XMLParser(remove_blank_text=True)
-        tree = etree.parse(str(file_path), parser)
+        with open_func(file_path, 'rb') as f:
+            tree = etree.parse(f, parser)
         root = tree.getroot()
         
         changes_made = 0
@@ -225,7 +236,8 @@ def process_epg_file(file_path, icon_db, owner, repo_name):
             matched_icon_path = find_best_match(channel_names, icon_db)
 
             if matched_icon_path:
-                new_icon_url = RAW_BASE_URL.format(owner=owner, repo=repo_name, filepath=str(matched_icon_path))
+                # Используем относительный путь для ссылок
+                new_icon_url = RAW_BASE_URL.format(owner=owner, repo=repo_name, filepath=matched_icon_path.as_posix())
                 
                 icon_tag = channel.find('icon')
                 if icon_tag is None:
@@ -238,15 +250,15 @@ def process_epg_file(file_path, icon_db, owner, repo_name):
         if changes_made > 0:
             print(f"Внесено {changes_made} изменений в иконки файла {file_path.name}.")
             doctype_str = '<!DOCTYPE tv SYSTEM "https://iptvx.one/xmltv.dtd">'
-            uncompressed_path = file_path.with_suffix('.xml.tmp')
-            tree.write(str(uncompressed_path), pretty_print=True, xml_declaration=True, encoding='UTF-8', doctype=doctype_str)
             
-            if str(file_path).endswith('.gz'):
-                with open(uncompressed_path, 'rb') as f_in, gzip.open(file_path, 'wb') as f_out:
-                    f_out.writelines(f_in)
-                uncompressed_path.unlink()
+            # <<< ИЗМЕНЕНИЕ: Логика сохранения теперь тоже использует was_gzipped >>>
+            if was_gzipped:
+                # Сразу пишем в сжатый файл
+                with gzip.open(file_path, 'wb') as f_out:
+                    f_out.write(etree.tostring(tree, pretty_print=True, xml_declaration=True, encoding='UTF-8', doctype=doctype_str))
             else:
-                uncompressed_path.rename(file_path)
+                # Пишем в обычный файл
+                tree.write(str(file_path), pretty_print=True, xml_declaration=True, encoding='UTF-8', doctype=doctype_str)
 
         return True
 
@@ -335,6 +347,7 @@ def main():
         for future in as_completed(futures):
             future.result() 
     
+    # --- Этап 3: Финализация и создание README ---
     print("\n--- Этап 3: Формирование финальных ссылок и README.md ---")
     
     url_to_result = {res['entry']['url']: res for res in download_results}
@@ -347,26 +360,34 @@ def main():
             final_results.append(res)
             continue
         
-        open_func = gzip.open if str(res['temp_path']).endswith('.gz') else open
-        try:
-            with open_func(res['temp_path'], 'rb') as f:
-                sig = f.read(5)
-            if sig[:2] == b"\x1f\x8b":
-                true_extension = '.xml.gz'
-            else:
+        # <<< ИЗМЕНЕНИЕ: Возвращаем надежное определение расширения файла >>>
+        if is_gzipped(res['temp_path']):
+            true_extension = '.xml.gz'
+        else:
+            # Дополнительная проверка на XML на всякий случай
+            try:
+                with open(res['temp_path'], 'rb') as f:
+                    sig = f.read(5)
+                if sig.startswith(b'<?xml'):
+                    true_extension = '.xml'
+                else:
+                    # Если не gzip и не xml, берем из URL
+                    true_extension = ''.join(Path(urlparse(res['entry']['url']).path).suffixes) or '.xml'
+            except Exception:
                 true_extension = '.xml'
-        except Exception:
-             true_extension = '.xml'
              
         filename_from_url = Path(urlparse(res['entry']['url']).path).name or "download"
         base_name = filename_from_url.split('.')[0]
+        # Используем .suffixes для случаев типа file.xml.gz
         proposed_filename = f"{base_name}{true_extension}"
 
         final_name = proposed_filename
         counter = 1
         while final_name in used_names:
             p = Path(proposed_filename)
-            final_name = f"{p.stem}-{counter}{''.join(p.suffixes)}"
+            # Правим формирование имени для случаев с двойным расширением
+            stem = p.name.replace(''.join(p.suffixes), '')
+            final_name = f"{stem}-{counter}{''.join(p.suffixes)}"
             counter += 1
         
         used_names.add(final_name)
@@ -374,12 +395,12 @@ def main():
         target_path = DATA_DIR / final_name
         res['temp_path'].rename(target_path)
         
-        raw_url = RAW_BASE_URL.format(owner=owner, repo=repo_name, filepath=str(target_path))
+        raw_url = RAW_BASE_URL.format(owner=owner, repo=repo_name, filepath=target_path.as_posix())
         res['raw_url'] = raw_url
         res['short_raw_url'] = shorten_url_safely(raw_url)
         
         if res['size_mb'] < JSDELIVR_SIZE_LIMIT_MB:
-            jsdelivr_url = JSDELIVR_BASE_URL.format(owner=owner, repo=repo_name, filepath=str(target_path))
+            jsdelivr_url = JSDELIVR_BASE_URL.format(owner=owner, repo=repo_name, filepath=target_path.as_posix())
             res['jsdelivr_url'] = jsdelivr_url
             res['short_jsdelivr_url'] = shorten_url_safely(jsdelivr_url)
         
@@ -387,7 +408,6 @@ def main():
 
     update_readme(final_results, notes)
     print("\nСкрипт успешно завершил работу.")
-
 
 if __name__ == '__main__':
     main()
