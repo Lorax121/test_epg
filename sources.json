@@ -1,0 +1,19 @@
+{
+  "sources": [
+    {
+      "url": "http://epg.one/epg.xml.gz",
+      "desc": "основной файл epg.one EPG с квадратными пиконами с темным фоном",
+      "ico_src": true
+    },
+    {
+      "url": "http://epg.one/epg.xml",
+      "desc": "облегченный файл epg.one EPG с квадратными иконками с темным фоном"
+    },
+    {
+      "url": "https://iptvx.one/EPG_LITE",
+      "desc": "облегченный файл iptvx.one (архив на 14 дней / без описаний)"
+    }
+
+  ],
+  "notes": "/////////\\\\\\\\\"
+}
