@@ -21,7 +21,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests gdshortener
+        run: pip install requests gdshortener lxml
 
       - name: Run update script
         run: python fetch_and_commit.py
