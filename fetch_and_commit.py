@@ -29,7 +29,7 @@ SIMILARITY_THRESHOLD = 80
 SOURCES_FILE = 'sources.json'
 DATA_DIR = Path('data')
 ICONS_DIR = Path('icons')
-ICONS_MAP_FILE = Path('icons_map.json') # <-- Наш новый файл карты
+ICONS_MAP_FILE = Path('icons_map.json')
 README_FILE = 'README.md'
 RAW_BASE_URL = "https://raw.githubusercontent.com/{owner}/{repo}/main/{filepath}"
 
@@ -51,7 +51,6 @@ def is_gzipped(file_path):
 # ---
 
 def read_sources_and_notes():
-    # ... (без изменений) ...
     try:
         with open(SOURCES_FILE, 'r', encoding='utf-8') as f:
             config = json.load(f)
@@ -62,7 +61,6 @@ def read_sources_and_notes():
     except Exception as e: sys.exit(f"Ошибка чтения {SOURCES_FILE}: {e}")
 
 def clear_data_dir():
-    # ... (без изменений) ...
     if DATA_DIR.exists():
         for f in DATA_DIR.iterdir():
             if f.is_file(): f.unlink()
@@ -70,7 +68,6 @@ def clear_data_dir():
         DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 def download_one(entry):
-    # ... (без изменений) ...
     url, desc = entry['url'], entry['desc']
     temp_path = DATA_DIR / ("tmp_" + os.urandom(4).hex())
     result = {'entry': entry, 'error': None}
@@ -92,7 +89,6 @@ def download_one(entry):
     return result
 
 def download_icon(session, url, save_path):
-    # ... (без изменений) ...
     try:
         with session.get(url, stream=True, timeout=30) as r:
             r.raise_for_status()
@@ -102,7 +98,6 @@ def download_icon(session, url, save_path):
     except requests.RequestException: return False
 
 def _parse_icon_source_file(file_path, desc):
-    # ... (без изменений) ...
     found_icons = []
     try:
         open_func = gzip.open if is_gzipped(file_path) else open
@@ -119,8 +114,8 @@ def _parse_icon_source_file(file_path, desc):
         print(f"Ошибка парсинга {file_path.name}: {e}", file=sys.stderr)
     return found_icons
 
+# <<< ИЗМЕНЕНИЕ 1: `build_icon_database` теперь всегда хранит `names` как `set` >>>
 def build_icon_database(download_results):
-    # ... (без изменений, но теперь возвращает построенную базу) ...
     print("\n--- Этап 1: Создание базы данных иконок ---")
     icon_db, icon_urls_to_download = {}, {}
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -130,8 +125,8 @@ def build_icon_database(download_results):
                 filename = Path(urlparse(icon_url).path).name or f"{channel_id}.png"
                 local_icon_path = ICONS_DIR / filename
                 db_key = f"{desc}_{channel_id}"
-                # Сохраняем путь как строку, чтобы он был JSON-сериализуемым
-                icon_db[db_key] = {'icon_path': str(local_icon_path), 'names': list(names)}
+                # Храним путь как Path, а имена как set. Преобразуем для JSON только при записи.
+                icon_db[db_key] = {'icon_path': local_icon_path, 'names': names}
                 icon_urls_to_download[icon_url] = local_icon_path
     
     print(f"Найдено {len(icon_db)} каналов с иконками. Требуется скачать {len(icon_urls_to_download)} уникальных иконок.")
@@ -145,39 +140,35 @@ def build_icon_database(download_results):
             for future in as_completed(future_to_url): future.result()
     print("Загрузка иконок завершена.")
     return icon_db
+# <<< КОНЕЦ ИЗМЕНЕНИЯ 1 >>>
 
-# <<< ИЗМЕНЕНИЕ: Старая функция `load_existing_icons` заменена на эту >>>
+# <<< ИЗМЕНЕНИЕ 2: `load_icon_map` теперь преобразует `names` обратно в `set` >>>
 def load_icon_map():
-    """Загружает карту сопоставления иконок из файла icons_map.json."""
     print("\n--- Этап 1: Загрузка карты сопоставления иконок ---")
     if not ICONS_MAP_FILE.is_file():
         print(f"Файл {ICONS_MAP_FILE} не найден. Качество сопоставления может быть низким.")
         print("Рекомендуется запустить полное обновление (`--full-update`) для его создания.")
-        return {} # Возвращаем пустую базу, если карты нет
-
+        return {}
     with open(ICONS_MAP_FILE, 'r', encoding='utf-8') as f:
         icon_map_data = json.load(f)
-    
-    # Преобразуем данные обратно в рабочий формат (пути в Path, списки в set)
     icon_db = {}
     for key, value in icon_map_data.items():
         icon_db[key] = {
             'icon_path': Path(value['icon_path']),
-            'names': set(value['names'])
+            'names': set(value['names'])  # <-- Вот исправление
         }
     print(f"Карта иконок успешно загружена. Записей: {len(icon_db)}.")
     return icon_db
-# <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
-
+# <<< КОНЕЦ ИЗМЕНЕНИЯ 2 >>>
 
 def find_best_match(channel_names, icon_db):
-    # ... (без изменений) ...
     if not channel_names: return None
     best_match_score = 0
     best_match_path = None
     for db_entry in icon_db.values():
         db_names = db_entry['names']
         if not db_names: continue
+        # Эта строка теперь будет работать, так как оба операнда - множества (set)
         if channel_names & db_names: return db_entry['icon_path']
         score = fuzz.token_set_ratio(' '.join(sorted(channel_names)), ' '.join(sorted(db_names)))
         if score > best_match_score:
@@ -241,6 +232,16 @@ def update_readme(results, notes):
         f.write("\n".join(lines))
     print(f"README.md обновлён ({len(results)} записей)")
 
+# <<< ИЗМЕНЕНИЕ 3: Кастомный сериализатор для JSON, чтобы он мог обрабатывать Path и set >>>
+class CustomEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, Path):
+            return str(obj)
+        if isinstance(obj, set):
+            return list(obj)
+        return json.JSONEncoder.default(self, obj)
+# <<< КОНЕЦ ИЗМЕНЕНИЯ 3 >>>
+
 def main():
     parser = argparse.ArgumentParser(description="EPG Updater Script")
     parser.add_argument('--full-update', action='store_true', help='Perform a full update, including icons.')
@@ -257,7 +258,6 @@ def main():
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         download_results = list(executor.map(download_one, sources))
 
-    # <<< КЛЮЧЕВОЕ ИЗМЕНЕНИЕ В ЛОГИКЕ >>>
     if args.full_update:
         print("\nЗапущен режим ПОЛНОГО ОБНОВЛЕНИЯ.")
         if ICONS_DIR.exists():
@@ -266,20 +266,18 @@ def main():
         else:
             ICONS_DIR.mkdir(parents=True, exist_ok=True)
         
-        # Шаг 1: Строим базу
         icon_db = build_icon_database(download_results)
         
-        # Шаг 2: Сохраняем базу в файл-карту
         print(f"Сохранение карты иконок в {ICONS_MAP_FILE}...")
+        # <<< ИЗМЕНЕНИЕ 4: Используем кастомный сериализатор >>>
         with open(ICONS_MAP_FILE, 'w', encoding='utf-8') as f:
-            json.dump(icon_db, f, ensure_ascii=False, indent=2)
+            json.dump(icon_db, f, ensure_ascii=False, indent=2, cls=CustomEncoder)
+        # <<< КОНЕЦ ИЗМЕНЕНИЯ 4 >>>
         print("Карта иконок сохранена.")
 
     else:
         print("\nЗапущен режим ЕЖЕДНЕВНОГО ОБНОВЛЕНИЯ.")
-        # Просто загружаем готовую карту
         icon_db = load_icon_map()
-    # <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
 
     print("\n--- Этап 2: Замена ссылок на иконки в EPG файлах ---")
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -287,7 +285,6 @@ def main():
         for future in as_completed(futures): future.result()
     
     print("\n--- Этап 3: Финализация и README ---")
-    # ... (остальной код без изменений) ...
     url_to_result = {res['entry']['url']: res for res in download_results}
     ordered_results = [url_to_result[s['url']] for s in sources]
     final_results, used_names = [], set()
