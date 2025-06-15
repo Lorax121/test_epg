@@ -225,19 +225,13 @@ def process_epg_file(file_path, icon_db, owner, repo_name):
             doctype_str = '<!DOCTYPE tv SYSTEM "https://iptvx.one/xmltv.dtd">'
             xml_bytes = etree.tostring(tree, pretty_print=True, xml_declaration=True, encoding='UTF-8', doctype=doctype_str)
             
-            # <<< ИЗМЕНЕНИЕ ЗДЕСЬ >>>
             if was_gzipped:
-                # Определяем имя для сохранения внутри архива
-                # Убираем .gz с конца имени файла
                 archive_internal_name = file_path.with_suffix('').name
-                # Используем gzip.GzipFile для контроля над метаданными
                 with gzip.GzipFile(filename=archive_internal_name, mode='wb', fileobj=open(file_path, 'wb'), mtime=0) as f_out:
                     f_out.write(xml_bytes)
             else:
-                # Для обычных XML файлов ничего не меняется
                 with open(file_path, 'wb') as f_out:
                     f_out.write(xml_bytes)
-            # <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
                     
         return True
     except Exception as e:
@@ -310,7 +304,11 @@ def main():
     # --- Этап 3 ---
     print("\n--- Этап 3: Формирование финальных ссылок и README.md ---")
     url_to_result = {res['entry']['url']: res for res in download_results}
-    ordered_results = [url_to_result[s['url']] for s in sources}
+    
+    # <<< ИЗМЕНЕНИЕ ЗДЕСЬ: Исправлена опечатка '}' на ']' >>>
+    ordered_results = [url_to_result[s['url']] for s in sources]
+    # <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
+
     final_results = []
     used_names = set()
     for res in ordered_results:
@@ -319,7 +317,6 @@ def main():
             continue
         # --- Блок переименования ---
         final_filename_from_url = Path(urlparse(res['entry']['url']).path).name
-        # Проверяем, есть ли расширение. Если нет, это может быть URL типа /EPG_LITE
         if not Path(final_filename_from_url).suffix:
             base_name = final_filename_from_url
             true_extension = '.xml.gz' if is_gzipped(res['temp_path']) else '.xml'
