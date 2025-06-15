@@ -65,14 +65,14 @@ def read_sources_and_notes():
             sources = config.get('sources', [])
             notes = config.get('notes', '')
             if not sources:
-                sys.exit("Ошибка: в sources.json не найдено ни одного источника в ключе 'sources'.")
+                sys.exit("Ошибка: в sources.json не найдено ни одного источника.")
             for s in sources:
                 s.setdefault('ico_src', False)
             return sources, notes
     except FileNotFoundError:
         sys.exit(f"Ошибка: Файл {SOURCES_FILE} не найден.")
     except json.JSONDecodeError:
-        sys.exit(f"Ошибка: Некорректный формат JSON в файле {SOURCES_FILE}.")
+        sys.exit(f"Ошибка: Некорректный формат JSON в {SOURCES_FILE}.")
 
 def clear_data_dir():
     if DATA_DIR.exists():
@@ -82,8 +82,7 @@ def clear_data_dir():
         DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 def download_one(entry):
-    url = entry['url']
-    desc = entry['desc']
+    url, desc = entry['url'], entry['desc']
     temp_path = DATA_DIR / ("tmp_" + os.urandom(4).hex())
     result = {'entry': entry, 'error': None}
     try:
@@ -91,12 +90,11 @@ def download_one(entry):
         with requests.get(url, stream=True, timeout=120) as r:
             r.raise_for_status()
             with open(temp_path, 'wb') as f:
-                for chunk in r.iter_content(CHUNK_SIZE):
-                    f.write(chunk)
+                for chunk in r.iter_content(CHUNK_SIZE): f.write(chunk)
         size_bytes = temp_path.stat().st_size
         size_mb = round(size_bytes / (1024 * 1024), 2)
         if size_bytes == 0: raise ValueError("Файл пустой.")
-        if size_bytes > MAX_FILE_SIZE_MB * 1024 * 1024: raise ValueError(f"Файл слишком большой ({size_mb} MB > {MAX_FILE_SIZE_MB} MB).")
+        if size_bytes > MAX_FILE_SIZE_MB * 1024 * 1024: raise ValueError(f"Слишком большой ({size_mb} MB).")
         result.update({'size_mb': size_mb, 'temp_path': temp_path})
         return result
     except Exception as e:
@@ -110,11 +108,9 @@ def download_icon(session, url, save_path):
         with session.get(url, stream=True, timeout=30) as r:
             r.raise_for_status()
             with open(save_path, 'wb') as f:
-                for chunk in r.iter_content(8192):
-                    f.write(chunk)
+                for chunk in r.iter_content(8192): f.write(chunk)
         return True
-    except requests.RequestException:
-        return False
+    except requests.RequestException: return False
 
 def _parse_icon_source_file(file_path, desc):
     found_icons = []
@@ -131,30 +127,24 @@ def _parse_icon_source_file(file_path, desc):
                 names = get_channel_names(channel)
                 if names and icon_url:
                     found_icons.append((desc, channel_id, names, icon_url))
-    except (etree.XMLSyntaxError, gzip.BadGzipFile, ValueError) as e:
-        print(f"Ошибка парсинга {file_path.name} для сбора иконок: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f"Ошибка парсинга {file_path.name}: {e}", file=sys.stderr)
     return found_icons
 
 def build_icon_database(download_results):
-    print("\n--- Этап 1: Создание базы данных иконок (параллельный парсинг) ---")
-    icon_db = {}
-    icon_urls_to_download = {}
+    print("\n--- Этап 1: Создание базы данных иконок ---")
+    icon_db, icon_urls_to_download = {}, {}
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = []
-        for result in download_results:
-            if not result.get('error') and result['entry']['ico_src']:
-                futures.append(executor.submit(_parse_icon_source_file, result['temp_path'], result['entry']['desc']))
+        futures = [executor.submit(_parse_icon_source_file, r['temp_path'], r['entry']['desc']) for r in download_results if not r.get('error') and r['entry']['ico_src']]
         for future in as_completed(futures):
             for desc, channel_id, names, icon_url in future.result():
-                parsed_url = urlparse(icon_url)
-                filename = Path(parsed_url.path).name or f"{channel_id}.png"
+                filename = Path(urlparse(icon_url).path).name or f"{channel_id}.png"
                 local_icon_path = ICONS_DIR / filename
                 db_key = f"{desc}_{channel_id}"
                 icon_db[db_key] = {'icon_path': local_icon_path, 'names': names}
                 icon_urls_to_download[icon_url] = local_icon_path
     
-    print(f"Найдено {len(icon_db)} каналов с иконками в источниках.")
-    print(f"Требуется скачать {len(icon_urls_to_download)} уникальных иконок.")
+    print(f"Найдено {len(icon_db)} каналов с иконками. Требуется скачать {len(icon_urls_to_download)} уникальных иконок.")
     adapter = requests.adapters.HTTPAdapter(pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS)
     with requests.Session() as session:
         session.mount('http://', adapter)
@@ -162,8 +152,7 @@ def build_icon_database(download_results):
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             downloader = partial(download_icon, session)
             future_to_url = {executor.submit(downloader, url, path): url for url, path in icon_urls_to_download.items()}
-            for future in as_completed(future_to_url):
-                future.result()
+            for future in as_completed(future_to_url): future.result()
     print("Загрузка иконок завершена.")
     return icon_db
 
@@ -171,14 +160,13 @@ def load_existing_icons():
     print("\n--- Этап 1: Сканирование существующих иконок ---")
     icon_db = {}
     if not ICONS_DIR.is_dir():
-        print("Папка icons/ не найдена. Пропускаем сканирование.")
+        print("Папка icons/ не найдена.")
         return icon_db
     for icon_path in ICONS_DIR.iterdir():
         if icon_path.is_file() and icon_path.suffix.lower() in ['.png', '.jpg', '.jpeg', '.gif']:
             clean_icon_name = clean_name(icon_path.stem)
-            db_key = f"local_{clean_icon_name}"
-            icon_db[db_key] = {'icon_path': icon_path, 'names': {clean_icon_name}}
-    print(f"Найдено {len(icon_db)} существующих иконок в папке {ICONS_DIR}.")
+            icon_db[f"local_{clean_icon_name}"] = {'icon_path': icon_path, 'names': {clean_icon_name}}
+    print(f"Найдено {len(icon_db)} существующих иконок.")
     return icon_db
 
 def find_best_match(channel_names, icon_db):
@@ -189,7 +177,7 @@ def find_best_match(channel_names, icon_db):
         db_names = db_entry['names']
         if not db_names: continue
         if channel_names & db_names: return db_entry['icon_path']
-        score = fuzz.token_set_ratio(' '.join(sorted(list(channel_names))), ' '.join(sorted(list(db_names))))
+        score = fuzz.token_set_ratio(' '.join(sorted(channel_names)), ' '.join(sorted(db_names)))
         if score > best_match_score:
             best_match_score = score
             best_match_path = db_entry['icon_path']
@@ -197,8 +185,8 @@ def find_best_match(channel_names, icon_db):
         return best_match_path
     return None
 
-def process_epg_file(file_path, icon_db, owner, repo_name):
-    """Обрабатывает один EPG-файл: находит и заменяет URL иконок."""
+# <<< ИЗМЕНЕНИЕ 1: Сигнатура функции теперь принимает `entry` >>>
+def process_epg_file(file_path, icon_db, owner, repo_name, entry):
     print(f"Обрабатываю файл: {file_path.name}")
     try:
         was_gzipped = is_gzipped(file_path)
@@ -226,7 +214,10 @@ def process_epg_file(file_path, icon_db, owner, repo_name):
             xml_bytes = etree.tostring(tree, pretty_print=True, xml_declaration=True, encoding='UTF-8', doctype=doctype_str)
             
             if was_gzipped:
-                archive_internal_name = file_path.with_suffix('').name
+                # <<< ИЗМЕНЕНИЕ 2: Используем `entry` для получения оригинального имени файла >>>
+                original_filename = Path(urlparse(entry['url']).path).name
+                archive_internal_name = original_filename[:-3] if original_filename.lower().endswith('.gz') else original_filename
+                
                 with gzip.GzipFile(filename=archive_internal_name, mode='wb', fileobj=open(file_path, 'wb'), mtime=0) as f_out:
                     f_out.write(xml_bytes)
             else:
@@ -239,14 +230,11 @@ def process_epg_file(file_path, icon_db, owner, repo_name):
         return False
 
 def update_readme(results, notes):
-    utc_now = datetime.now(timezone.utc)
-    timestamp = utc_now.strftime('%Y-%m-%d %H:%M %Z')
-    lines = []
-    if notes: lines.extend([notes, "\n---"])
+    utc_now, timestamp = datetime.now(timezone.utc), datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M %Z')
+    lines = [notes, "\n---"] if notes else []
     lines.append(f"\n# Обновлено: {timestamp}\n")
     for idx, r in enumerate(results, 1):
-        lines.append(f"### {idx}. {r['entry']['desc']}")
-        lines.append("")
+        lines.append(f"### {idx}. {r['entry']['desc']}\n")
         if r.get('error'):
             lines.extend([f"**Статус:** 🔴 Ошибка", f"**Источник:** `{r['entry']['url']}`", f"**Причина:** {r.get('error')}"])
         else:
@@ -258,27 +246,20 @@ def update_readme(results, notes):
 
 def main():
     parser = argparse.ArgumentParser(description="EPG Updater Script")
-    parser.add_argument('--full-update', action='store_true', help='Perform a full update, including downloading and refreshing icons.')
+    parser.add_argument('--full-update', action='store_true', help='Perform a full update, including icons.')
     args = parser.parse_args()
 
     repo = os.getenv('GITHUB_REPOSITORY')
-    if not repo or '/' not in repo:
-        sys.exit("Ошибка: не удалось определить GITHUB_REPOSITORY.")
+    if not repo or '/' not in repo: sys.exit("Ошибка: не удалось определить GITHUB_REPOSITORY.")
     
     owner, repo_name = repo.split('/')
-    
     sources, notes = read_sources_and_notes()
     clear_data_dir()
 
-    # --- Этап 0 ---
     print("\n--- Этап 0: Загрузка EPG файлов ---")
-    download_results = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_entry = {executor.submit(download_one, entry): entry for entry in sources}
-        for future in as_completed(future_to_entry):
-            download_results.append(future.result())
+        download_results = list(executor.map(download_one, sources))
 
-    # --- Этап 1 ---
     if args.full_update:
         print("\nЗапущен режим ПОЛНОГО ОБНОВЛЕНИЯ (включая иконки).")
         if ICONS_DIR.exists():
@@ -291,52 +272,37 @@ def main():
         print("\nЗапущен режим ЕЖЕДНЕВНОГО ОБНОВЛЕНИЯ (без загрузки новых иконок).")
         icon_db = load_existing_icons()
     
-    # --- Этап 2 ---
     print("\n--- Этап 2: Замена ссылок на иконки в EPG файлах ---")
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = []
-        for res in download_results:
-            if not res.get('error'):
-                futures.append(executor.submit(process_epg_file, res['temp_path'], icon_db, owner, repo_name))
-        for future in as_completed(futures):
-            future.result()
+        # <<< ИЗМЕНЕНИЕ 3: Передаем `res['entry']` в функцию >>>
+        futures = [executor.submit(process_epg_file, res['temp_path'], icon_db, owner, repo_name, res['entry']) for res in download_results if not res.get('error')]
+        for future in as_completed(futures): future.result()
     
-    # --- Этап 3 ---
     print("\n--- Этап 3: Формирование финальных ссылок и README.md ---")
     url_to_result = {res['entry']['url']: res for res in download_results}
-    
-    # <<< ИЗМЕНЕНИЕ ЗДЕСЬ: Исправлена опечатка '}' на ']' >>>
     ordered_results = [url_to_result[s['url']] for s in sources]
-    # <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
+    final_results, used_names = [], set()
 
-    final_results = []
-    used_names = set()
     for res in ordered_results:
         if res.get('error'):
             final_results.append(res)
             continue
-        # --- Блок переименования ---
+        
         final_filename_from_url = Path(urlparse(res['entry']['url']).path).name
         if not Path(final_filename_from_url).suffix:
-            base_name = final_filename_from_url
-            true_extension = '.xml.gz' if is_gzipped(res['temp_path']) else '.xml'
-            proposed_filename = f"{base_name}{true_extension}"
+            proposed_filename = f"{final_filename_from_url}{'.xml.gz' if is_gzipped(res['temp_path']) else '.xml'}"
         else:
             proposed_filename = final_filename_from_url
-        # --- Конец блока переименования ---
             
-        final_name = proposed_filename
-        counter = 1
+        final_name, counter = proposed_filename, 1
         while final_name in used_names:
-            p = Path(proposed_filename)
-            stem = p.name.replace(''.join(p.suffixes), '')
+            p, stem = Path(proposed_filename), p.name.replace(''.join(p.suffixes), '')
             final_name = f"{stem}-{counter}{''.join(p.suffixes)}"
             counter += 1
         used_names.add(final_name)
         target_path = DATA_DIR / final_name
         res['temp_path'].rename(target_path)
-        raw_url = RAW_BASE_URL.format(owner=owner, repo=repo_name, filepath=target_path.as_posix())
-        res['raw_url'] = raw_url
+        res['raw_url'] = RAW_BASE_URL.format(owner=owner, repo=repo_name, filepath=target_path.as_posix())
         final_results.append(res)
 
     update_readme(final_results, notes)
