@@ -1,0 +1,46 @@
+name: Daily Data Update
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  
+  workflow_dispatch: {}   
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests gdshortener
+
+      - name: Run update script
+        run: python fetch_and_commit.py
+
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          if git diff --quiet --exit-code data/ icons/ README.md; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          
+          git add data/ icons/ README.md
+          
+          git commit -m "Auto-update: $(date -u +'%Y-%m-%d')"
+          
+          git push
