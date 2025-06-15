@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 
+# --- Проверка и импорт зависимостей ---
 try:
     from lxml import etree
 except ImportError:
@@ -26,7 +27,9 @@ except ImportError:
     sys.exit(1)
 
 # --- КОНФИГУРАЦИЯ ОПТИМИЗАЦИИ ---
-MAX_WORKERS = 100 # Увеличиваем для максимального распараллеливания
+# Количество потоков для сетевых и процессорных задач
+MAX_WORKERS = 100
+# Порог схожести названий каналов для сопоставления иконок
 SIMILARITY_THRESHOLD = 80
 
 # --- КОНФИГУРАЦИЯ ---
@@ -36,14 +39,12 @@ ICONS_DIR = Path('icons')
 README_FILE = 'README.md'
 CHUNK_SIZE = 16 * 1024
 MAX_FILE_SIZE_MB = 95
-JSDELIVR_SIZE_LIMIT_MB = 20
 
 RAW_BASE_URL = "https://raw.githubusercontent.com/{owner}/{repo}/main/{filepath}"
-JSDELIVR_BASE_URL = "https://cdn.jsdelivr.net/gh/{owner}/{repo}@main/{filepath}"
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
-# ... (без изменений) ...
 def clean_name(name):
+    """Очищает имя канала для лучшего сравнения."""
     name = name.lower()
     name = re.sub(r'\s*\b(hd|fhd|uhd|4k|8k|sd|low|vip|\(p\))\b', '', name, flags=re.IGNORECASE)
     name = re.sub(r'\[.*?\]|\(.*?\)', '', name)
@@ -51,26 +52,33 @@ def clean_name(name):
     return ' '.join(name.split())
 
 def get_channel_names(channel_element):
+    """Извлекает и очищает все display-name из элемента channel."""
     names = [el.text for el in channel_element.findall('display-name')]
     return {clean_name(name) for name in names if name}
 
 def is_gzipped(file_path):
+    """Проверяет, является ли файл gzipped, по его магическим байтам."""
     with open(file_path, 'rb') as f:
         return f.read(2) == b'\x1f\x8b'
-# ---
+
+# --- ОСНОВНЫЕ ФУНКЦИИ ---
 
 def read_sources_and_notes():
-    # ... (без изменений) ...
+    """Читает и валидирует sources.json."""
     try:
         with open(SOURCES_FILE, 'r', encoding='utf-8') as f:
             config = json.load(f)
             sources = config.get('sources', [])
             notes = config.get('notes', '')
-            if not sources: sys.exit("Ошибка: в sources.json не найдено ни одного источника в ключе 'sources'.")
-            for s in sources: s.setdefault('ico_src', False)
+            if not sources:
+                sys.exit("Ошибка: в sources.json не найдено ни одного источника в ключе 'sources'.")
+            for s in sources:
+                s.setdefault('ico_src', False)
             return sources, notes
-    except FileNotFoundError: sys.exit(f"Ошибка: Файл {SOURCES_FILE} не найден.")
-    except json.JSONDecodeError: sys.exit(f"Ошибка: Некорректный формат JSON в файле {SOURCES_FILE}.")
+    except FileNotFoundError:
+        sys.exit(f"Ошибка: Файл {SOURCES_FILE} не найден.")
+    except json.JSONDecodeError:
+        sys.exit(f"Ошибка: Некорректный формат JSON в файле {SOURCES_FILE}.")
 
 def clear_data_dir():
     """Очищает только папку data."""
@@ -81,7 +89,7 @@ def clear_data_dir():
         DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 def download_one(entry):
-    # ... (без изменений) ...
+    """Скачивает один EPG-файл."""
     url = entry['url']
     desc = entry['desc']
     temp_path = DATA_DIR / ("tmp_" + os.urandom(4).hex())
@@ -91,7 +99,8 @@ def download_one(entry):
         with requests.get(url, stream=True, timeout=120) as r:
             r.raise_for_status()
             with open(temp_path, 'wb') as f:
-                for chunk in r.iter_content(CHUNK_SIZE): f.write(chunk)
+                for chunk in r.iter_content(CHUNK_SIZE):
+                    f.write(chunk)
         size_bytes = temp_path.stat().st_size
         size_mb = round(size_bytes / (1024 * 1024), 2)
         if size_bytes == 0: raise ValueError("Файл пустой.")
@@ -105,18 +114,19 @@ def download_one(entry):
     return result
 
 def download_icon(session, url, save_path):
-    # ... (без изменений) ...
+    """Скачивает одну иконку с помощью общей сессии."""
     try:
         with session.get(url, stream=True, timeout=30) as r:
             r.raise_for_status()
             with open(save_path, 'wb') as f:
-                for chunk in r.iter_content(8192): f.write(chunk)
+                for chunk in r.iter_content(8192):
+                    f.write(chunk)
         return True
     except requests.RequestException:
         return False
 
 def _parse_icon_source_file(file_path, desc):
-    # ... (без изменений) ...
+    """Вспомогательная функция для парсинга одного EPG-файла в отдельном потоке."""
     found_icons = []
     try:
         open_func = gzip.open if is_gzipped(file_path) else open
@@ -136,7 +146,7 @@ def _parse_icon_source_file(file_path, desc):
     return found_icons
 
 def build_icon_database(download_results):
-    # ... (без изменений, но с улучшенной сессией) ...
+    """Сканирует EPG-источники, скачивает иконки и создает базу данных."""
     print("\n--- Этап 1: Создание базы данных иконок (параллельный парсинг) ---")
     icon_db = {}
     icon_urls_to_download = {}
@@ -146,7 +156,6 @@ def build_icon_database(download_results):
         for result in download_results:
             if not result.get('error') and result['entry']['ico_src']:
                 futures.append(executor.submit(_parse_icon_source_file, result['temp_path'], result['entry']['desc']))
-
         for future in as_completed(futures):
             for desc, channel_id, names, icon_url in future.result():
                 parsed_url = urlparse(icon_url)
@@ -159,7 +168,7 @@ def build_icon_database(download_results):
     print(f"Найдено {len(icon_db)} каналов с иконками в источниках.")
     print(f"Требуется скачать {len(icon_urls_to_download)} уникальных иконок.")
     
-    # Создаем сессию с увеличенным пулом соединений
+    # Создаем сессию с увеличенным пулом соединений для обхода лимита в 10 подключений
     adapter = requests.adapters.HTTPAdapter(pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS)
     with requests.Session() as session:
         session.mount('http://', adapter)
@@ -182,19 +191,15 @@ def load_existing_icons():
         return icon_db
         
     for icon_path in ICONS_DIR.iterdir():
-        if icon_path.is_file() and icon_path.suffix in ['.png', '.jpg', '.jpeg', '.gif']:
-            # Имя файла может не совпадать с display-name, поэтому делаем простое имя для сравнения
+        if icon_path.is_file() and icon_path.suffix.lower() in ['.png', '.jpg', '.jpeg', '.gif']:
             clean_icon_name = clean_name(icon_path.stem)
             db_key = f"local_{clean_icon_name}"
-            icon_db[db_key] = {
-                'icon_path': icon_path,
-                'names': {clean_icon_name} # Используем очищенное имя файла как основу для сопоставления
-            }
+            icon_db[db_key] = {'icon_path': icon_path, 'names': {clean_icon_name}}
     print(f"Найдено {len(icon_db)} существующих иконок в папке {ICONS_DIR}.")
     return icon_db
 
 def find_best_match(channel_names, icon_db):
-    # ... (без изменений) ...
+    """Находит наиболее подходящую иконку в базе данных."""
     if not channel_names: return None
     best_match_score = 0
     best_match_path = None
@@ -211,7 +216,7 @@ def find_best_match(channel_names, icon_db):
     return None
 
 def process_epg_file(file_path, icon_db, owner, repo_name):
-    # ... (без изменений) ...
+    """Обрабатывает один EPG-файл: находит и заменяет URL иконок."""
     print(f"Обрабатываю файл: {file_path.name}")
     try:
         was_gzipped = is_gzipped(file_path)
@@ -227,7 +232,8 @@ def process_epg_file(file_path, icon_db, owner, repo_name):
             if matched_icon_path:
                 new_icon_url = RAW_BASE_URL.format(owner=owner, repo=repo_name, filepath=matched_icon_path.as_posix())
                 icon_tag = channel.find('icon')
-                if icon_tag is None: icon_tag = etree.SubElement(channel, 'icon')
+                if icon_tag is None:
+                    icon_tag = etree.SubElement(channel, 'icon')
                 if icon_tag.get('src') != new_icon_url:
                     icon_tag.set('src', new_icon_url)
                     changes_made += 1
@@ -245,21 +251,29 @@ def process_epg_file(file_path, icon_db, owner, repo_name):
         return False
 
 def update_readme(results, notes):
-    """Обновляет README.md, убрана логика сокращения ссылок."""
+    """Обновляет README.md без лишних ссылок."""
     utc_now = datetime.now(timezone.utc)
     timestamp = utc_now.strftime('%Y-%m-%d %H:%M %Z')
     lines = []
-    if notes: lines.extend([notes, "\n---"])
+    if notes:
+        lines.extend([notes, "\n---"])
     lines.append(f"\n# Обновлено: {timestamp}\n")
     for idx, r in enumerate(results, 1):
         lines.append(f"### {idx}. {r['entry']['desc']}")
         lines.append("")
         if r.get('error'):
-            lines.extend([f"**Статус:** 🔴 Ошибка", f"**Источник:** `{r['entry']['url']}`", f"**Причина:** {r.get('error')}"])
+            lines.extend([
+                f"**Статус:** 🔴 Ошибка",
+                f"**Источник:** `{r['entry']['url']}`",
+                f"**Причина:** {r.get('error')}"
+            ])
         else:
-            lines.extend([f"**Размер:** {r['size_mb']} MB", "", f"**Основная ссылка (GitHub Raw):**", f"`{r['raw_url']}`"])
-            if r.get('jsdelivr_url'):
-                lines.append(f"**CDN (jsDelivr):** `{r['jsdelivr_url']}`")
+            lines.extend([
+                f"**Размер:** {r['size_mb']} MB",
+                "",
+                f"**Ссылка для плеера (GitHub Raw):**",
+                f"`{r['raw_url']}`"
+            ])
         lines.append("\n---")
     with open(README_FILE, 'w', encoding='utf-8') as f:
         f.write("\n".join(lines))
@@ -295,13 +309,11 @@ def main():
     # --- Этап 1: Работа с иконками ---
     if args.full_update:
         print("\nЗапущен режим ПОЛНОГО ОБНОВЛЕНИЯ (включая иконки).")
-        # При полном обновлении полностью очищаем папку с иконками
         if ICONS_DIR.exists():
             for f in ICONS_DIR.iterdir():
                 if f.is_file(): f.unlink()
         else:
             ICONS_DIR.mkdir(parents=True, exist_ok=True)
-        # Создаем .gitignore в папке icons, если его нет
         (ICONS_DIR / '.gitignore').write_text('*\n!.gitignore')
         icon_db = build_icon_database(download_results)
     else:
@@ -344,8 +356,6 @@ def main():
         res['temp_path'].rename(target_path)
         raw_url = RAW_BASE_URL.format(owner=owner, repo=repo_name, filepath=target_path.as_posix())
         res['raw_url'] = raw_url
-        if res['size_mb'] < JSDELIVR_SIZE_LIMIT_MB:
-            res['jsdelivr_url'] = JSDELIVR_BASE_URL.format(owner=owner, repo=repo_name, filepath=target_path.as_posix())
         final_results.append(res)
 
     update_readme(final_results, notes)
