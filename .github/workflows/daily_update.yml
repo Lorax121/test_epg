@@ -68,13 +68,14 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Проверяем изменения в data, icons и README
-          if git diff --quiet --exit-code data/ icons/ README.md; then
+          # Проверяем изменения в data, icons, README и карте иконок
+          if git diff --quiet --exit-code data/ icons/ README.md icons_map.json; then
             echo "No changes to commit."
             exit 0
           fi
           
-          git add data/ icons/ README.md
+          # Добавляем карту иконок в коммит
+          git add data/ icons/ README.md icons_map.json
           
           git commit -m "${{ steps.mode.outputs.commit_message }}"
           
