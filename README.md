@@ -8,11 +8,11 @@
 
 ---
 
-# Обновлено: 2025-07-21 02:09 UTC
+# Обновлено: 2025-07-22 02:04 UTC
 
 ### 1. основной файл epg.one EPG
 
-**Размер:** 36.88 MB
+**Размер:** 44.57 MB
 
 **Ссылка для плеера (GitHub Raw):**
 `https://raw.githubusercontent.com/Lorax121/epg_v2/main/data/epg.xml.gz`
@@ -20,7 +20,7 @@
 ---
 ### 2. облегченный файл epg.one EPG
 
-**Размер:** 7.3 MB
+**Размер:** 8.94 MB
 
 **Ссылка для плеера (GitHub Raw):**
 `https://raw.githubusercontent.com/Lorax121/epg_v2/main/data/epg.xml`
@@ -28,7 +28,7 @@
 ---
 ### 3. облегченный файл iptvx.one (архив на 14 дней / без описаний)
 
-**Размер:** 17.35 MB
+**Размер:** 22.02 MB
 
 **Ссылка для плеера (GitHub Raw):**
 `https://raw.githubusercontent.com/Lorax121/epg_v2/main/data/EPG_LITE.xml.gz`
