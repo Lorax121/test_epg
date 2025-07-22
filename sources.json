@@ -2,7 +2,7 @@
   "sources": [
     {
       "url": "http://epg.one/epg.xml.gz",
-      "desc": "основной файл epg.one EPG",
+      "desc": "основной файл epg.one EPG"
     },
     {
       "url": "http://epg.one/epg.xml",
