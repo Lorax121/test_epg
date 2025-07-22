@@ -1,4 +1,3 @@
-# fetch_and_commit.py
 
 import os
 import sys
@@ -15,13 +14,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from collections import defaultdict
 
-# --- Зависимости ---
 try:
     from lxml import etree
 except ImportError:
     sys.exit("Ошибка: lxml не установлен. Установите: pip install lxml")
 
-# --- Конфигурация ---
 MAX_WORKERS = 100
 SOURCES_FILE = 'sources.json'
 DATA_DIR = Path('data')
@@ -30,7 +27,6 @@ ICONS_MAP_FILE = Path('icons_map.json')
 README_FILE = 'README.md'
 RAW_BASE_URL = "https://raw.githubusercontent.com/{owner}/{repo}/main/{filepath}"
 
-# --- Вспомогательные функции ---
 def is_gzipped(file_path):
     """Проверяет, является ли файл gzipped."""
     with open(file_path, 'rb') as f:
@@ -40,12 +36,11 @@ class CustomEncoder(json.JSONEncoder):
     """Класс для сериализации Path объектов и множеств в JSON."""
     def default(self, obj):
         if isinstance(obj, Path):
-            return str(obj).replace('\\', '/') # Для совместимости с Windows
+            return str(obj).replace('\\', '/') 
         if isinstance(obj, set):
             return list(obj)
         return json.JSONEncoder.default(self, obj)
 
-# --- ОСНОВНЫЕ ФУНКЦИИ ---
 
 def read_sources_and_notes():
     """Читает источники и заметки из sources.json."""
@@ -98,7 +93,6 @@ def download_one(entry):
 def download_icon(session, url, save_path):
     """Скачивает одну иконку."""
     try:
-        # Создаем родительские директории, если их нет
         save_path.parent.mkdir(parents=True, exist_ok=True)
         with session.get(url, stream=True, timeout=30) as r:
             r.raise_for_status()
@@ -123,7 +117,6 @@ def get_icon_signature(file_path):
         if not icon_urls:
             return None
             
-        # Сортируем URL для консистентности хэша
         sorted_urls = sorted(list(icon_urls))
         return hashlib.sha256(''.join(sorted_urls).encode('utf-8')).hexdigest()
     except Exception as e:
@@ -131,32 +124,30 @@ def get_icon_signature(file_path):
         return None
 
 def perform_full_update(download_results):
-    """Выполняет полное обновление: группирует источники, скачивает иконки, создает карту."""
+    """Выполняет полное обновление: создает единый пул иконок и карту ссылок."""
     print("\n--- Этап 1: Группировка источников по наборам иконок ---")
-    
     groups = defaultdict(list)
     for res in download_results:
         if not res.get('error'):
             signature = get_icon_signature(res['temp_path'])
             groups[signature].append(res)
-    
     print(f"Найдено {len(groups)} уникальных групп источников (включая группу без иконок).")
 
-    icon_data = {"groups": {}, "source_to_group": {}}
-    # Новый словарь: { icon_url: { 'hash': '...', 'paths': {Path(), Path(), ...} } }
-    icon_metadata = defaultdict(lambda: {'hash': None, 'paths': set()})
+    icon_data = {
+        "icon_pool": {},
+        "groups": {},
+        "source_to_group": {}
+    }
+    all_unique_urls = set()
 
-    print("\n--- Этап 2: Создание карт иконок и планирование загрузки ---")
+    print("\n--- Этап 2: Создание карт иконок ---")
     for signature, sources_in_group in groups.items():
         if signature is None:
             for res in sources_in_group:
                 icon_data["source_to_group"][res['entry']['url']] = None
             continue
         
-        group_id = signature[:12]
-        group_icon_dir = ICONS_DIR / f"group_{group_id}"
         icon_map_for_group = {}
-        
         representative_file = sources_in_group[0]['temp_path']
         
         try:
@@ -167,40 +158,30 @@ def perform_full_update(download_results):
                     icon_tag = channel.find('icon')
                     if channel_id and icon_tag is not None and 'src' in icon_tag.attrib:
                         icon_url = icon_tag.get('src')
-                        # Генерируем имя файла из URL или ID. Убираем возможные параметры из URL.
-                        parsed_url = urlparse(icon_url)
-                        filename = Path(parsed_url.path).name or f"{channel_id}.png"
-                        local_path = group_icon_dir / filename
-                        
-                        icon_map_for_group[channel_id] = local_path
-                        # Собираем все пути, по которым должна лежать эта иконка
-                        icon_metadata[icon_url]['paths'].add(local_path)
+                        icon_map_for_group[channel_id] = icon_url
+                        all_unique_urls.add(icon_url)
                     channel.clear()
         except Exception as e:
             print(f"Ошибка парсинга файла-представителя {representative_file.name}: {e}", file=sys.stderr)
             continue
 
-        icon_data["groups"][signature] = {"icon_dir": group_icon_dir, "icon_map": icon_map_for_group}
+        icon_data["groups"][signature] = {"icon_map": icon_map_for_group}
         for res in sources_in_group:
             icon_data["source_to_group"][res['entry']['url']] = signature
-            
-        print(f"Группа {group_id}: {len(sources_in_group)} источников, {len(icon_map_for_group)} иконок запланировано.")
+        print(f"Группа {signature[:12]}: обработано, {len(icon_map_for_group)} иконок-ссылок создано.")
 
-    # --- НОВАЯ ЛОГИКА СКАЧИВАНИЯ И КОПИРОВАНИЯ ---
-    print(f"\n--- Этап 2.1: Загрузка уникальных иконок ---")
-    print(f"Требуется скачать {len(icon_metadata)} уникальных иконок.")
-    
-    # Создаем временную директорию для кэша иконок
-    cache_dir = ICONS_DIR / ".cache"
-    cache_dir.mkdir(exist_ok=True)
-    
+    icon_pool_dir = ICONS_DIR / "pool"
     urls_to_download = {}
-    for url in icon_metadata:
-        # Генерируем безопасное имя файла для кэша на основе хеша URL
+    for url in all_unique_urls:
         url_hash = hashlib.sha1(url.encode('utf-8')).hexdigest()
-        cache_path = cache_dir / url_hash
-        icon_metadata[url]['hash'] = url_hash
-        urls_to_download[url] = cache_path
+        original_ext = "".join(Path(urlparse(url).path).suffixes) if Path(urlparse(url).path).suffixes else ".png"
+        pool_path = icon_pool_dir / f"{url_hash}{original_ext}"
+        
+        icon_data["icon_pool"][url] = pool_path
+        urls_to_download[url] = pool_path
+
+    print(f"\n--- Этап 2.1: Загрузка уникальных иконок в единое хранилище ---")
+    print(f"Требуется скачать {len(urls_to_download)} уникальных иконок.")
 
     if urls_to_download:
         adapter = requests.adapters.HTTPAdapter(pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS)
@@ -210,27 +191,10 @@ def perform_full_update(download_results):
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                 downloader = partial(download_icon, session)
                 future_to_url = {executor.submit(downloader, url, path): url for url, path in urls_to_download.items()}
-                # Дождемся завершения всех загрузок
                 for future in as_completed(future_to_url):
                     future.result()
-        print("Загрузка уникальных иконок в кэш завершена.")
+        print("Загрузка иконок в 'icons/pool' завершена.")
 
-    print("\n--- Этап 2.2: Распределение иконок по папкам групп ---")
-    import shutil
-    copied_count = 0
-    for data in icon_metadata.values():
-        cache_path = cache_dir / data['hash']
-        if cache_path.exists():
-            for dest_path in data['paths']:
-                dest_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(cache_path, dest_path)
-                copied_count += 1
-    print(f"Скопировано {copied_count} файлов иконок в целевые директории.")
-    
-    # Очищаем кэш
-    shutil.rmtree(cache_dir)
-    
-    # Сохраняем карту
     print(f"\nСохранение карты иконок в {ICONS_MAP_FILE}...")
     with open(ICONS_MAP_FILE, 'w', encoding='utf-8') as f:
         json.dump(icon_data, f, ensure_ascii=False, indent=2, cls=CustomEncoder)
@@ -249,22 +213,20 @@ def load_icon_data_for_daily_update():
         with open(ICONS_MAP_FILE, 'r', encoding='utf-8') as f:
             icon_data = json.load(f)
         
-        # Преобразуем строковые пути обратно в Path объекты для удобства
-        for group in icon_data.get('groups', {}).values():
-            if 'icon_map' in group:
-                group['icon_map'] = {k: Path(v) for k, v in group['icon_map'].items()}
+        if 'icon_pool' in icon_data:
+            icon_data['icon_pool'] = {k: Path(v) for k, v in icon_data['icon_pool'].items()}
         
-        print(f"Карта иконок успешно загружена. Групп: {len(icon_data.get('groups', {}))}.")
+        print(f"Карта иконок успешно загружена. Групп: {len(icon_data.get('groups', {}))}, иконок в пуле: {len(icon_data.get('icon_pool', {}))}.")
         return icon_data
     except Exception as e:
         print(f"Ошибка загрузки или парсинга {ICONS_MAP_FILE}: {e}", file=sys.stderr)
         return None
 
-def process_epg_file(file_path, icon_sub_map, owner, repo_name, entry):
-    """Обрабатывает один EPG-файл, заменяя URL иконок по точной карте."""
+def process_epg_file(file_path, group_map, icon_pool, owner, repo_name, entry):
+    """Обрабатывает один EPG-файл, заменяя URL иконок по карте с двойной ссылкой."""
     print(f"Обрабатываю файл: {file_path.name} для источника {entry['desc']}")
-    if not icon_sub_map:
-        print(f"Для {file_path.name} нет карты иконок. Пропускаю замену.")
+    if not group_map or not icon_pool:
+        print(f"Для {file_path.name} нет карты иконок или пула. Пропускаю замену.")
         return True
 
     try:
@@ -278,18 +240,19 @@ def process_epg_file(file_path, icon_sub_map, owner, repo_name, entry):
         changes_made = 0
         for channel in root.findall('channel'):
             channel_id = channel.get('id')
-            # Точный поиск по ID канала в карте для данной группы
-            matched_icon_path = icon_sub_map.get(channel_id)
-            
-            if matched_icon_path:
-                new_icon_url = RAW_BASE_URL.format(owner=owner, repo=repo_name, filepath=str(matched_icon_path).replace('\\', '/'))
-                icon_tag = channel.find('icon')
-                if icon_tag is None:
-                    icon_tag = etree.SubElement(channel, 'icon')
+            icon_url_pointer = group_map.get(channel_id)
+            if icon_url_pointer:
+                matched_icon_path = icon_pool.get(icon_url_pointer)
                 
-                if icon_tag.get('src') != new_icon_url:
-                    icon_tag.set('src', new_icon_url)
-                    changes_made += 1
+                if matched_icon_path:
+                    new_icon_url = RAW_BASE_URL.format(owner=owner, repo=repo_name, filepath=str(matched_icon_path).replace('\\', '/'))
+                    icon_tag = channel.find('icon')
+                    if icon_tag is None:
+                        icon_tag = etree.SubElement(channel, 'icon')
+                    
+                    if icon_tag.get('src') != new_icon_url:
+                        icon_tag.set('src', new_icon_url)
+                        changes_made += 1
         
         if changes_made > 0:
             print(f"Внесено {changes_made} изменений в иконки файла {file_path.name}.")
@@ -323,10 +286,8 @@ def update_readme(results, notes):
     lines.append(f"\n# Обновлено: {timestamp}\n")
     
     for idx, r in enumerate(results, 1):
-        # Заменяем заголовок ### на жирный текст с номером
         lines.append(f"**{idx}. {r['entry']['desc']}**\n")
         if r.get('error'):
-            # Добавляем пустую строку для визуального отделения
             lines.extend([
                 f"**Статус:** 🔴 Ошибка",
                 f"**Источник:** `{r['entry']['url']}`",
@@ -334,7 +295,6 @@ def update_readme(results, notes):
                 "\n---"
             ])
         else:
-            # Добавляем пустую строку для визуального отделения
             lines.extend([
                 f"**Размер:** {r['size_mb']} MB",
                 "",
@@ -375,6 +335,7 @@ def main():
 
     print("\n--- Этап 3: Замена ссылок на иконки в EPG файлах ---")
     if icon_data:
+        icon_pool = icon_data.get('icon_pool', {})
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = []
             for res in download_results:
@@ -383,11 +344,11 @@ def main():
                 source_url = res['entry']['url']
                 group_hash = icon_data['source_to_group'].get(source_url)
                 
-                icon_sub_map = {}
-                if group_hash:
-                    icon_sub_map = icon_data['groups'][group_hash].get('icon_map', {})
+                group_map = {}
+                if group_hash and group_hash in icon_data['groups']:
+                    group_map = icon_data['groups'][group_hash].get('icon_map', {})
                 
-                futures.append(executor.submit(process_epg_file, res['temp_path'], icon_sub_map, owner, repo_name, res['entry']))
+                futures.append(executor.submit(process_epg_file, res['temp_path'], group_map, icon_pool, owner, repo_name, res['entry']))
             
             for future in as_completed(futures):
                 future.result()
@@ -405,14 +366,12 @@ def main():
             continue
             
         final_filename_from_url = Path(urlparse(res['entry']['url']).path).name
-        # Для URL без расширения (типа EPG_LITE) добавляем расширение
         if not Path(final_filename_from_url).suffix:
             ext = '.xml.gz' if is_gzipped(res['temp_path']) else '.xml'
             proposed_filename = f"{final_filename_from_url}{ext}"
         else:
             proposed_filename = final_filename_from_url
 
-        # Обработка дубликатов имен файлов
         final_name, counter = proposed_filename, 1
         while final_name in used_names:
             p_stem = Path(proposed_filename).stem
