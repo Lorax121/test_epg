@@ -134,25 +134,20 @@ def perform_full_update(download_results):
     """Выполняет полное обновление: группирует источники, скачивает иконки, создает карту."""
     print("\n--- Этап 1: Группировка источников по наборам иконок ---")
     
-    # Группируем источники по сигнатуре иконок
     groups = defaultdict(list)
     for res in download_results:
         if not res.get('error'):
             signature = get_icon_signature(res['temp_path'])
-            # Если сигнатуры нет (нет иконок), источник будет в группе None
             groups[signature].append(res)
     
     print(f"Найдено {len(groups)} уникальных групп источников (включая группу без иконок).")
 
-    icon_data = {
-        "groups": {},
-        "source_to_group": {}
-    }
-    urls_to_download = {}
+    icon_data = {"groups": {}, "source_to_group": {}}
+    # Новый словарь: { icon_url: { 'hash': '...', 'paths': {Path(), Path(), ...} } }
+    icon_metadata = defaultdict(lambda: {'hash': None, 'paths': set()})
 
-    print("\n--- Этап 2: Создание карт иконок и подготовка к загрузке ---")
+    print("\n--- Этап 2: Создание карт иконок и планирование загрузки ---")
     for signature, sources_in_group in groups.items():
-        # Пропускаем группу источников без иконок
         if signature is None:
             for res in sources_in_group:
                 icon_data["source_to_group"][res['entry']['url']] = None
@@ -160,10 +155,8 @@ def perform_full_update(download_results):
         
         group_id = signature[:12]
         group_icon_dir = ICONS_DIR / f"group_{group_id}"
-        
-        # Создаем карту сопоставления ID канала -> локальный путь
         icon_map_for_group = {}
-        # Берем первый файл из группы для парсинга, т.к. наборы иконок у них одинаковые
+        
         representative_file = sources_in_group[0]['temp_path']
         
         try:
@@ -174,28 +167,41 @@ def perform_full_update(download_results):
                     icon_tag = channel.find('icon')
                     if channel_id and icon_tag is not None and 'src' in icon_tag.attrib:
                         icon_url = icon_tag.get('src')
-                        # Генерируем имя файла из URL или ID канала
-                        filename = Path(urlparse(icon_url).path).name or f"{channel_id}.png"
+                        # Генерируем имя файла из URL или ID. Убираем возможные параметры из URL.
+                        parsed_url = urlparse(icon_url)
+                        filename = Path(parsed_url.path).name or f"{channel_id}.png"
                         local_path = group_icon_dir / filename
+                        
                         icon_map_for_group[channel_id] = local_path
-                        urls_to_download[icon_url] = local_path
+                        # Собираем все пути, по которым должна лежать эта иконка
+                        icon_metadata[icon_url]['paths'].add(local_path)
                     channel.clear()
         except Exception as e:
             print(f"Ошибка парсинга файла-представителя {representative_file.name}: {e}", file=sys.stderr)
-            continue # Пропускаем эту группу, если не удалось распарсить
+            continue
 
-        # Сохраняем информацию о группе
-        icon_data["groups"][signature] = {
-            "icon_dir": group_icon_dir,
-            "icon_map": icon_map_for_group
-        }
+        icon_data["groups"][signature] = {"icon_dir": group_icon_dir, "icon_map": icon_map_for_group}
         for res in sources_in_group:
             icon_data["source_to_group"][res['entry']['url']] = signature
             
-        print(f"Группа {group_id}: {len(sources_in_group)} источников, {len(icon_map_for_group)} иконок.")
+        print(f"Группа {group_id}: {len(sources_in_group)} источников, {len(icon_map_for_group)} иконок запланировано.")
 
-    # Скачиваем все уникальные иконки
-    print(f"\nТребуется скачать {len(urls_to_download)} уникальных иконок.")
+    # --- НОВАЯ ЛОГИКА СКАЧИВАНИЯ И КОПИРОВАНИЯ ---
+    print(f"\n--- Этап 2.1: Загрузка уникальных иконок ---")
+    print(f"Требуется скачать {len(icon_metadata)} уникальных иконок.")
+    
+    # Создаем временную директорию для кэша иконок
+    cache_dir = ICONS_DIR / ".cache"
+    cache_dir.mkdir(exist_ok=True)
+    
+    urls_to_download = {}
+    for url in icon_metadata:
+        # Генерируем безопасное имя файла для кэша на основе хеша URL
+        url_hash = hashlib.sha1(url.encode('utf-8')).hexdigest()
+        cache_path = cache_dir / url_hash
+        icon_metadata[url]['hash'] = url_hash
+        urls_to_download[url] = cache_path
+
     if urls_to_download:
         adapter = requests.adapters.HTTPAdapter(pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS)
         with requests.Session() as session:
@@ -204,12 +210,28 @@ def perform_full_update(download_results):
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                 downloader = partial(download_icon, session)
                 future_to_url = {executor.submit(downloader, url, path): url for url, path in urls_to_download.items()}
+                # Дождемся завершения всех загрузок
                 for future in as_completed(future_to_url):
                     future.result()
-        print("Загрузка иконок завершена.")
-        
+        print("Загрузка уникальных иконок в кэш завершена.")
+
+    print("\n--- Этап 2.2: Распределение иконок по папкам групп ---")
+    import shutil
+    copied_count = 0
+    for data in icon_metadata.values():
+        cache_path = cache_dir / data['hash']
+        if cache_path.exists():
+            for dest_path in data['paths']:
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(cache_path, dest_path)
+                copied_count += 1
+    print(f"Скопировано {copied_count} файлов иконок в целевые директории.")
+    
+    # Очищаем кэш
+    shutil.rmtree(cache_dir)
+    
     # Сохраняем карту
-    print(f"Сохранение карты иконок в {ICONS_MAP_FILE}...")
+    print(f"\nСохранение карты иконок в {ICONS_MAP_FILE}...")
     with open(ICONS_MAP_FILE, 'w', encoding='utf-8') as f:
         json.dump(icon_data, f, ensure_ascii=False, indent=2, cls=CustomEncoder)
     print("Карта иконок сохранена.")
