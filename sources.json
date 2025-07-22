@@ -3,7 +3,6 @@
     {
       "url": "http://epg.one/epg.xml.gz",
       "desc": "основной файл epg.one EPG",
-      "ico_src": true
     },
     {
       "url": "http://epg.one/epg.xml",
