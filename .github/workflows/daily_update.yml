@@ -16,19 +16,18 @@ on:
         default: 'daily'
         type: choice
         options:
-        - daily  # Только EPG
-        - full   # EPG + Иконки
+        - daily
+        - full
 
 jobs:
   update:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        # Нужен fetch-depth: 0, чтобы git мог определить, когда последний раз менялась папка icons
         with:
           fetch-depth: 0
 
@@ -38,21 +37,17 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        # Убрали gdshortener
-        run: pip install requests lxml thefuzz python-Levenshtein
+        run: pip install requests lxml
 
       - name: Determine update mode
         id: mode
         run: |
-          # Если запуск по расписанию в 01:00 в воскресенье - это full update
           if [[ "${{ github.event_name }}" == "schedule" && "$(date -u +'%H:%M %w')" == "01:00 0" ]]; then
             echo "mode_flag=--full-update" >> $GITHUB_OUTPUT
             echo "commit_message=Auto-update (weekly, full): $(date -u +'%Y-%m-%d')" >> $GITHUB_OUTPUT
-          # Если ручной запуск и выбран 'full'
           elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.update_type }}" == "full" ]]; then
             echo "mode_flag=--full-update" >> $GITHUB_OUTPUT
             echo "commit_message=Manual full update: $(date -u +'%Y-%m-%d')" >> $GITHUB_OUTPUT
-          # Во всех остальных случаях - daily update
           else
             echo "mode_flag=" >> $GITHUB_OUTPUT
             echo "commit_message=Auto-update (daily): $(date -u +'%Y-%m-%d')" >> $GITHUB_OUTPUT
@@ -67,16 +62,16 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # Проверяем изменения в data, icons, README и карте иконок
+
+          # Проверяем изменения. Путь icons/ будет отслеживать все вложенные папки.
           if git diff --quiet --exit-code data/ icons/ README.md icons_map.json; then
             echo "No changes to commit."
             exit 0
           fi
-          
-          # Добавляем карту иконок в коммит
+
+          # Добавляем все изменения в отслеживаемые файлы и папки
           git add data/ icons/ README.md icons_map.json
-          
+
           git commit -m "${{ steps.mode.outputs.commit_message }}"
-          
+
           git push
