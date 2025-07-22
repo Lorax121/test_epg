@@ -24,13 +24,22 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    timeout-minutes: 360
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Cache icons
+        id: cache-icons
+        uses: actions/cache@v4
+        with:
+          path: icons/pool
+          key: ${{ runner.os }}-icons-v1-${{ hashFiles('sources.json') }}
+          restore-keys: |
+            ${{ runner.os }}-icons-v1-
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -43,9 +52,9 @@ jobs:
       - name: Determine update mode
         id: mode
         run: |
-          if [[ "${{ github.event_name }}" == "schedule" && "$(date -u +'%H:%M %w')" == "01:00 0" ]]; then
+          if [[ "${{ github.event_name }}" == "schedule" && "$(date -u +'%H:%M %d')" == "01:00 01" ]]; then
             echo "mode_flag=--full-update" >> $GITHUB_OUTPUT
-            echo "commit_message=Auto-update (weekly, full): $(date -u +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+            echo "commit_message=Auto-update (monthly, full): $(date -u +'%Y-%m-%d')" >> $GITHUB_OUTPUT
           elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.update_type }}" == "full" ]]; then
             echo "mode_flag=--full-update" >> $GITHUB_OUTPUT
             echo "commit_message=Manual full update: $(date -u +'%Y-%m-%d')" >> $GITHUB_OUTPUT
@@ -64,15 +73,13 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Проверяем изменения. Путь icons/ будет отслеживать все вложенные папки.
           if git diff --quiet --exit-code data/ icons/ README.md icons_map.json; then
             echo "No changes to commit."
             exit 0
           fi
 
-          # Добавляем все изменения в отслеживаемые файлы и папки
           git add data/ icons/ README.md icons_map.json
 
           git commit -m "${{ steps.mode.outputs.commit_message }}"
-
+          
           git push
