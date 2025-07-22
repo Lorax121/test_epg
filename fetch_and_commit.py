@@ -21,7 +21,7 @@ try:
 except ImportError:
     sys.exit("Ошибка: lxml не установлен. Установите: pip install lxml")
 
-MAX_WORKERS = 20  
+MAX_WORKERS = 50  
 ICON_DOWNLOAD_WORKERS = 10  
 REQUEST_TIMEOUT = 45  
 ICON_TIMEOUT = 15  
